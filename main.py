@@ -26,139 +26,146 @@ def db_op(query, params=(), fetch=False):
 def init_db():
     db_op('CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, is_running INTEGER, interval INTEGER)')
     db_op('CREATE TABLE IF NOT EXISTS chats (chat_id INTEGER PRIMARY KEY, title TEXT)')
-    db_op('CREATE TABLE IF NOT EXISTS blacklist (chat_id INTEGER PRIMARY KEY)')
     if not db_op("SELECT * FROM settings", fetch=True):
         db_op("INSERT INTO settings VALUES (1, 1, 60)")
 
-# ================= دوال جلب المحتوى ================= #
+# ================= جلب المحتوى من API التدبر ================= #
 
-def fetch_hadith():
+def fetch_tadabor_data():
     try:
-        res = requests.get("https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=1&per_page=40", timeout=10).json()
-        h_id = random.choice(res['data'])['id']
-        h_details = requests.get(f"https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id={h_id}", timeout=10).json()
-        return f"📜 *حديث نبوي شريف:*\n\n{h_details['hadeeth']}\n\n📖 *المصدر:* {h_details['attribution']}"
-    except: return "📜 قال ﷺ: «مَنْ صَلَّى عَلَيَّ صَلَاةً صَلَّى الله عَلَيْهِ بِهَا عَشْرًا»"
+        res = requests.get("https://mp3quran.net/api/v3/tadabor", timeout=20).json()
+        all_items = []
+        if 'tadabor' in res:
+            for sora_id in res['tadabor']:
+                for item in res['tadabor'][sora_id]:
+                    all_items.append(item)
+        return all_items
+    except:
+        return []
 
-def fetch_tadabor():
-    try:
-        res = requests.get("https://mp3quran.net/api/v3/tadabor", timeout=10).json()
-        item = random.choice(res['tadabor'])
-        return item['video_url'], f"🎥 *تأملات قرآنية*\n\n📖 سورة: {item['surah_name']}\n🎙 القارئ: {item['reciter_name']}"
-    except: return None, None
-
-def fetch_quran_audio():
-    try:
-        res = requests.get("https://api.alquran.cloud/v1/ayah/random/ar.alafasy", timeout=10).json()
-        d = res['data']
-        return d['audio'], f"📖 *{d['surah']['name']}*\n\n{d['text']}"
-    except: return None, None
-
-# ================= لوحات التحكم ================= #
-
-def main_markup():
-    markup = InlineKeyboardMarkup(row_width=2)
-    conf = db_op("SELECT is_running, interval FROM settings", fetch=True)[0]
-    status = "🛑 إيقاف النشر" if conf[0] == 1 else "✅ تشغيل النشر"
-    markup.add(InlineKeyboardButton(status, callback_data="toggle_run"))
-    markup.add(InlineKeyboardButton("⏱ ضبط الوقت", callback_data="menu_time"),
-               InlineKeyboardButton("📊 القنوات", callback_data="menu_chats"))
-    markup.add(InlineKeyboardButton("🚫 القائمة السوداء", callback_data="menu_black"),
-               InlineKeyboardButton("📢 إذاعة", callback_data="menu_broadcast"))
-    markup.add(InlineKeyboardButton("🚀 نشر فوري (تجربة)", callback_data="menu_instant"))
-    return markup
-
-# ================= معالجة الأوامر ================= #
-
-@bot.message_handler(commands=['start', 'admin'])
-def start_cmd(message):
-    if message.from_user.id != ADMIN_ID: return
-    bot.send_message(message.chat.id, "🛠 **لوحة التحكم الكاملة للأدمن:**", reply_markup=main_markup(), parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    if call.from_user.id != ADMIN_ID: return
+def get_content(target_type=None):
+    mode = target_type if target_type else random.choice(["video", "image", "hadith", "azkar"])
     
-    data = call.data
-    if data == "toggle_run":
-        db_op("UPDATE settings SET is_running = 1 - is_running")
-    
-    elif data == "menu_time":
-        markup = InlineKeyboardMarkup()
-        for t in [15, 30, 60, 120, 360, 720]:
-            markup.add(InlineKeyboardButton(f"كل {t} دقيقة", callback_data=f"settime_{t}"))
-        markup.add(InlineKeyboardButton("⬅️ عودة", callback_data="main"))
-        return bot.edit_message_text("⏱ اختر الفاصل الزمني للنشر:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+    if mode in ["video", "image"]:
+        items = fetch_tadabor_data()
+        if items:
+            item = random.choice(items)
+            caption = f"📖 *سورة {item.get('sora_name', '')}*\n🎙 القارئ: {item.get('reciter_name', 'غير معروف')}\n\n✨ {item.get('title', '')}"
+            if mode == "video" and item.get('video_url'):
+                return "video", item['video_url'], caption
+            elif mode == "image" and item.get('image_url'):
+                return "photo", item['image_url'], caption
+        mode = "hadith"
 
-    elif data.startswith("settime_"):
-        t = int(data.split("_")[1])
-        db_op("UPDATE settings SET interval = ?", (t,))
-        bot.answer_callback_query(call.id, f"تم ضبط الوقت: {t} دقيقة")
-
-    elif data == "menu_chats":
-        chats = db_op("SELECT chat_id, title FROM chats", fetch=True)
-        text = "📊 **القنوات المتصلة:**\n\n" + "\n".join([f"🔹 `{c[0]}` - {c[1]}" for c in chats])
-        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("⬅️ عودة", callback_data="main"))
-        return bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
-    elif data == "menu_instant":
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🎥 فيديو تدبر", callback_data="inst_tadabor"),
-                   InlineKeyboardButton("📜 حديث", callback_data="inst_hadith"))
-        markup.add(InlineKeyboardButton("🎙 قرآن صوتي", callback_data="inst_quran"),
-                   InlineKeyboardButton("📿 ذكر", callback_data="inst_azkar"))
-        markup.add(InlineKeyboardButton("⬅️ عودة", callback_data="main"))
-        return bot.edit_message_text("🚀 اختر الخدمة للنشر الفوري الآن:", call.message.chat.id, call.message.message_id, reply_markup=markup)
-
-    elif data.startswith("inst_"):
-        bot.answer_callback_query(call.id, "جاري النشر...")
-        mode = data.split("_")[1]
-        publish_content(manual_mode=mode)
-
-    elif data == "main":
-        return bot.edit_message_text("🛠 **لوحة التحكم الكاملة للأدمن:**", call.message.chat.id, call.message.message_id, reply_markup=main_markup(), parse_mode="Markdown")
-
-    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=main_markup())
-
-# ================= النشر والمهام الخلفية ================= #
-
-def publish_content(manual_mode=None):
-    chats = db_op("SELECT chat_id FROM chats", fetch=True)
-    black = [b[0] for b in db_op("SELECT chat_id FROM blacklist", fetch=True)]
-    
-    choice = manual_mode if manual_mode else random.choice(["tadabor", "hadith", "quran", "azkar"])
-    
-    content = None
-    if choice == "tadabor":
-        v, c = fetch_tadabor()
-        content = ("video", v, c)
-    elif choice == "hadith":
-        content = ("text", None, fetch_hadith())
-    elif choice == "quran":
-        a, c = fetch_quran_audio()
-        content = ("audio", a, c)
-    else:
-        content = ("text", None, f"📿 {random.choice(['سبحان الله', 'الحمد لله', 'الله أكبر'])}")
-
-    for c_id in chats:
-        if c_id[0] in black: continue
+    if mode == "hadith":
         try:
-            if content[0] == "video": bot.send_video(c_id[0], content[1], caption=content[2], parse_mode="Markdown")
-            elif content[0] == "audio": bot.send_audio(c_id[0], content[1], caption=content[2], parse_mode="Markdown")
-            else: bot.send_message(c_id[0], content[2], parse_mode="Markdown")
-        except: pass
+            res = requests.get("https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=1&per_page=50").json()
+            h_id = random.choice(res['data'])['id']
+            h = requests.get(f"https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id={h_id}").json()
+            return "text", None, f"📜 *حديث نبوي:*\n\n{h['hadeeth']}\n\n📖 {h['attribution']}"
+        except:
+            return "text", None, "📿 سبحان الله وبحمده، سبحان الله العظيم."
+
+    return "text", None, "📿 لا إله إلا الله وحده لا شريك له"
+
+# ================= وظائف النشر ================= #
+
+def publish_to_all(ctype, media, msg):
+    chats = db_op("SELECT chat_id FROM chats", fetch=True)
+    success = 0
+    for c_id in chats:
+        try:
+            if ctype == "video":
+                bot.send_video(c_id[0], media, caption=msg, parse_mode="Markdown")
+            elif ctype == "photo":
+                bot.send_photo(c_id[0], media, caption=msg, parse_mode="Markdown")
+            else:
+                bot.send_message(c_id[0], msg, parse_mode="Markdown")
+            success += 1
+        except:
+            continue
+    return success
 
 def auto_loop():
     while True:
         conf = db_op("SELECT is_running, interval FROM settings", fetch=True)[0]
-        if conf[0] == 1: publish_content()
+        if conf[0] == 1:
+            ctype, media, msg = get_content()
+            publish_to_all(ctype, media, msg)
         time.sleep(conf[1] * 60)
 
+# ================= لوحة تحكم الأدمن ================= #
+
+def main_menu():
+    markup = InlineKeyboardMarkup(row_width=2)
+    conf = db_op("SELECT is_running, interval FROM settings", fetch=True)[0]
+    status_text = "✅ النشر يعمل" if conf[0] == 1 else "🛑 النشر متوقف"
+    
+    markup.add(InlineKeyboardButton(status_text, callback_data="toggle_run"))
+    markup.add(InlineKeyboardButton(f"⏱ كل {conf[1]} دقيقة", callback_data="menu_time"))
+    markup.add(InlineKeyboardButton("📊 عرض القنوات", callback_data="list_chats"))
+    markup.add(InlineKeyboardButton("🎥 نشر فيديو فوري", callback_data="inst_video"))
+    markup.add(InlineKeyboardButton("🖼 نشر صورة فورية", callback_data="inst_image"))
+    markup.add(InlineKeyboardButton("📢 إذاعة (نص)", callback_data="broadcast"))
+    return markup
+
+@bot.message_handler(commands=['start', 'admin'])
+def admin_panel(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "⚠️ هذا البوت للنشر التلقائي في القنوات.")
+        return
+    bot.send_message(message.chat.id, "🛠 **لوحة تحكم الأدمن:**", reply_markup=main_menu(), parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callbacks(call):
+    if call.from_user.id != ADMIN_ID: return
+
+    if call.data == "toggle_run":
+        db_op("UPDATE settings SET is_running = 1 - is_running")
+    
+    elif call.data == "list_chats":
+        chats = db_op("SELECT chat_id, title FROM chats", fetch=True)
+        if not chats:
+            text = "❌ لا توجد قنوات مسجلة حالياً."
+        else:
+            text = "📊 **القنوات والمجموعات المسجلة:**\n\n"
+            for i, c in enumerate(chats, 1):
+                text += f"{i}. `{c[0]}` - {c[1]}\n"
+        
+        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("⬅️ عودة", callback_data="back_main"))
+        return bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif call.data == "menu_time":
+        markup = InlineKeyboardMarkup()
+        for t in [15, 30, 60, 120, 360]:
+            markup.add(InlineKeyboardButton(f"كل {t} دقيقة", callback_data=f"set_{t}"))
+        markup.add(InlineKeyboardButton("⬅️ عودة", callback_data="back_main"))
+        return bot.edit_message_text("⏱ اختر وقت النشر التلقائي:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif call.data.startswith("set_"):
+        t = int(call.data.split("_")[1])
+        db_op("UPDATE settings SET interval = ?", (t,))
+        bot.answer_callback_query(call.id, f"تم تغيير الوقت إلى {t} دقيقة")
+
+    elif call.data.startswith("inst_"):
+        ctype, media, msg = get_content(call.data.split("_")[1])
+        bot.answer_callback_query(call.id, "جاري النشر...")
+        res = publish_to_all(ctype, media, msg)
+        bot.send_message(call.message.chat.id, f"✅ تم النشر في {res} قناة.")
+
+    elif call.data == "back_main":
+        pass # سيقوم التحديث في الأسفل بإعادة القائمة الرئيسية
+
+    bot.edit_message_text("🛠 **لوحة تحكم الأدمن:**", call.message.chat.id, call.message.message_id, reply_markup=main_menu(), parse_mode="Markdown")
+
+# ================= إدارة القنوات تلقائياً ================= #
+
 @bot.my_chat_member_handler()
-def track_chats(message):
-    status = message.new_chat_member.status
-    if status in ["administrator", "member"]:
-        db_op("INSERT OR IGNORE INTO chats VALUES (?, ?)", (message.chat.id, message.chat.title))
+def auto_track(message):
+    new = message.new_chat_member
+    if new.status in ["administrator", "member"]:
+        title = message.chat.title if message.chat.title else "بدون عنوان"
+        db_op("INSERT OR IGNORE INTO chats VALUES (?, ?)", (message.chat.id, title))
     else:
         db_op("DELETE FROM chats WHERE chat_id = ?", (message.chat.id,))
 
@@ -166,5 +173,5 @@ def track_chats(message):
 if __name__ == "__main__":
     init_db()
     threading.Thread(target=auto_loop, daemon=True).start()
-    print("Admin Bot is Ready!")
+    print("Bot is ready...")
     bot.infinity_polling()
