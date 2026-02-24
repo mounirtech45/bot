@@ -9,88 +9,93 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RTMP_URL = os.getenv("RTMP_URL")
 CHAT_ID = os.getenv("CHAT_ID")
-ADMIN_ID = os.getenv("ADMIN_ID") # آيدي حسابك لتلقي الرسائل الخاصة
+ADMIN_ID = os.getenv("ADMIN_ID")
 
 ALGERIA_TZ = pytz.timezone("Africa/Algiers")
 IMAGE_PATH = "icons/image.jpg"
 
 scheduler = AsyncIOScheduler(timezone=ALGERIA_TZ)
 
-# دالة إرسال الرسائل (إلى القناة أو الخاص)
+# --- قائمة الإذاعات (مدمجة من الكود الخاص بك) ---
+STATIONS = {
+    "مشارى العفاسي": "https://backup.qurango.net/radio/mishary_alafasi",
+    "ماهر المعيقلي": "https://backup.qurango.net/radio/maher",
+    "عبدالباسط مجود": "https://backup.qurango.net/radio/abdulbasit_abdulsamad_mojawwad",
+    "المنشاوي": "https://backup.qurango.net/radio/mohammed_siddiq_alminshawi",
+    "ياسر الدوسري": "https://backup.qurango.net/radio/yasser_aldosari",
+    "سعد الغامدي": "https://backup.qurango.net/radio/saad_alghamdi",
+    "إذاعة البقرة": "https://backup.qurango.net/radio/albaqarah",
+    "الرقية الشرعية": "https://backup.qurango.net/radio/roqiah",
+    "أذكار الصباح": "https://backup.qurango.net/radio/athkar_sabah",
+    "أذكار المساء": "https://backup.qurango.net/radio/athkar_masa",
+}
+
+# دالة إرسال الرسائل
 def send_msg(target_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": target_id, "text": text, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print(f"Error: {e}")
+    requests.post(url, json={"chat_id": target_id, "text": text, "parse_mode": "Markdown"})
 
-# دالة تشغيل المحرك FFmpeg
-def run_ffmpeg(source_url):
+# دالة تشغيل البث FFmpeg
+def run_ffmpeg(url):
+    # pkill لإيقاف أي بث سابق قبل بدء الجديد
+    subprocess.run(["pkill", "-f", "ffmpeg"])
+    
     command = [
         'ffmpeg', '-re', '-loop', '1', '-i', IMAGE_PATH,
-        '-i', source_url, '-c:v', 'libx264', '-preset', 'ultrafast',
+        '-i', url, '-c:v', 'libx264', '-preset', 'ultrafast',
         '-b:v', '600k', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k',
         '-f', 'flv', RTMP_URL
     ]
     subprocess.Popen(command)
 
-# المهمة التي ترسل المنشور للقناة وتبدأ البث
-async def start_broadcast_job(reciter, surah_name, source_url):
+# مهمة البث
+async def broadcast_task(name, url):
     post_text = (
-        f"📡 **بدأ البث المباشر الآن (توقيت الجزائر)**\n\n"
-        f"📖 **السورة:** {surah_name}\n"
-        f"🎙 **القارئ:** {reciter}\n\n"
-        f"🤲 اللهم اجعل القرآن الكريم ربيع قلوبنا ونور صدورنا.\n\n"
-        f"🎧 **للاستماع:** اضغط على زر 'انضمام' في أعلى القناة."
+        f"📡 **بدأ البث المباشر الآن (إذاعة القرآن)**\n\n"
+        f"🎙 **المحتوى:** {name}\n"
+        f"🕒 **التوقيت:** الجزائر العاصمة\n\n"
+        f"🤲 نسأل الله أن يتقبل منا ومنكم صالح الأعمال.\n\n"
+        f"🎧 انضم للبث الصوتي في أعلى القناة."
     )
-    # إرسال المنشور للقناة فقط عند بدء البث
     send_msg(CHAT_ID, post_text)
-    run_ffmpeg(source_url)
+    run_ffmpeg(url)
 
-# نظام مراقبة الأوامر
+# نظام استقبال الأوامر
 async def bot_polling():
-    last_update_id = 0
-    print("✅ البث المجدول والفوري يعمل الآن...")
+    last_id = 0
     while True:
         try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=30"
-            resp = requests.get(url).json()
-            for update in resp.get("result", []):
-                last_update_id = update["update_id"]
-                msg = update.get("message", {})
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={last_id + 1}&timeout=10"
+            updates = requests.get(url).json().get("result", [])
+            for up in updates:
+                last_id = up["update_id"]
+                msg = up.get("message", {})
                 text = msg.get("text", "")
                 user_id = str(msg.get("from", {}).get("id", ""))
-                chat_type = msg.get("chat", {}).get("type")
 
-                # يجب أن يكون الأمر من المدير فقط
                 if user_id == ADMIN_ID:
-                    
-                    # 1. أمر الجدولة: /schedule [القارئ] [السورة] [الرابط] [HH:MM]
-                    if text.startswith("/schedule"):
-                        parts = text.split(maxsplit=4)
-                        if len(parts) == 5:
-                            reciter, surah, s_url, t_str = parts[1], parts[2], parts[3], parts[4]
-                            h, m = t_str.split(":")
-                            scheduler.add_job(
-                                start_broadcast_job, "cron", 
-                                hour=int(h), minute=int(m), 
-                                args=[reciter, surah, s_url],
-                                id=f"job_{h}_{m}", replace_existing=True
-                            )
-                            # الرد في الخاص فقط
-                            send_msg(user_id, f"✅ **تم ضبط الجدول بنجاح:**\n📖 {surah}\n⏰ الساعة {t_str} بتوقيت الجزائر\n📢 سيتم النشر في القناة عند بدء البث.")
+                    # 1. بث فوري للتجربة: /stream اسم_الإذاعة
+                    # مثال: /stream مشارى العفاسي
+                    if text.startswith("/stream"):
+                        name = text.replace("/stream ", "").strip()
+                        if name in STATIONS:
+                            send_msg(ADMIN_ID, f"🚀 جاري بدء بث {name} فوراً...")
+                            await broadcast_task(name, STATIONS[name])
+                        else:
+                            send_msg(ADMIN_ID, "❌ الاسم غير موجود في القائمة.")
 
-                    # 2. أمر البث الفوري للتجربة: /stream [القارئ] [السورة] [الرابط]
-                    elif text.startswith("/stream"):
-                        parts = text.split(maxsplit=3)
-                        if len(parts) == 4:
-                            reciter, surah, s_url = parts[1], parts[2], parts[3]
-                            send_msg(user_id, f"🚀 جاري بدء البث التجريبي الفوري لـ {surah}...")
-                            await start_broadcast_job(reciter, surah, s_url)
+                    # 2. جدولة: /schedule اسم_الإذاعة 04:40
+                    elif text.startswith("/schedule"):
+                        parts = text.split()
+                        if len(parts) >= 3:
+                            time_str = parts[-1]
+                            name = " ".join(parts[1:-1])
+                            if name in STATIONS:
+                                h, m = time_str.split(":")
+                                scheduler.add_job(broadcast_task, "cron", hour=int(h), minute=int(m), args=[name, STATIONS[name]])
+                                send_msg(ADMIN_ID, f"✅ تم جدولة {name} الساعة {time_str} (الجزائر).")
 
-        except Exception as e:
-            await asyncio.sleep(5)
+        except: pass
         await asyncio.sleep(1)
 
 async def main():
