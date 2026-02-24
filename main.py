@@ -1,11 +1,11 @@
-limport os
+import os
 import asyncio
 import subprocess
 import pytz
 import requests
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# --- الإعدادات ---
+# --- الإعدادات جلب من المتغيرات ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RTMP_URL = os.getenv("RTMP_URL")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -16,26 +16,26 @@ IMAGE_PATH = "icons/image.jpg"
 
 scheduler = AsyncIOScheduler(timezone=ALGERIA_TZ)
 
-# عينة من الإذاعات (يمكنك إضافة البقية لاحقاً)
+# قائمة الإذاعات (تأكد من كتابة الاسم بالضبط عند الإرسال)
 STATIONS = {
-    "مشارى العفاسي": "https://backup.qurango.net/radio/mishary_alafasi",
-    "ماهر المعيقلي": "https://backup.qurango.net/radio/maher",
-    "إذاعة البقرة": "https://backup.qurango.net/radio/albaqarah",
-    "الرقية الشرعية": "https://backup.qurango.net/radio/roqiah"
+    "العفاسي": "https://backup.qurango.net/radio/mishary_alafasi",
+    "المعيقلي": "https://backup.qurango.net/radio/maher",
+    "البقرة": "https://backup.qurango.net/radio/albaqarah",
+    "الرقية": "https://backup.qurango.net/radio/roqiah"
 }
 
 def send_msg(target_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
         requests.post(url, json={"chat_id": target_id, "text": text, "parse_mode": "Markdown"})
-    except: pass
+    except:
+        pass
 
 def run_ffmpeg(url):
-    # إيقاف أي بث قديم فوراً
+    # إيقاف أي عملية قديمة لضمان عدم التداخل
     subprocess.run("pkill -9 ffmpeg", shell=True)
     
-    # أمر البث المعدل ليكون أكثر توافقاً مع الخوادم
-    # أضفنا -reconnect لضمان عدم انقطاع البث إذا تعثر الإنترنت
+    # أمر التشغيل المعدل
     command = (
         f'ffmpeg -re -loop 1 -i {IMAGE_PATH} '
         f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
@@ -44,8 +44,7 @@ def run_ffmpeg(url):
         f'-f flv "{RTMP_URL}"'
     )
     
-    # تشغيل الأمر وتسجيل المخرجات في الـ Logs لمراقبتها
-    subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    subprocess.Popen(command, shell=True)
 
 async def broadcast_task(name, url):
     post_text = (
@@ -55,10 +54,10 @@ async def broadcast_task(name, url):
     )
     send_msg(CHAT_ID, post_text)
     run_ffmpeg(url)
-    print(f"🚀 Attempting to stream: {name}")
 
 async def bot_polling():
     last_id = 0
+    print("✅ Bot is polling for commands...")
     while True:
         try:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={last_id + 1}&timeout=20"
@@ -73,19 +72,29 @@ async def bot_polling():
                     if text.startswith("/stream"):
                         name = text.replace("/stream ", "").strip()
                         if name in STATIONS:
-                            send_msg(ADMIN_ID, f"⏳ جاري تشغيل بث {name}...")
+                            send_msg(ADMIN_ID, f"⏳ جاري بدء البث الفوري: {name}")
                             await broadcast_task(name, STATIONS[name])
+                        else:
+                            send_msg(ADMIN_ID, f"❌ الاسم غير موجود. المتاح: {', '.join(STATIONS.keys())}")
                     
                     elif text.startswith("/schedule"):
                         parts = text.split()
                         if len(parts) >= 3:
-                            time_str = parts[-1]
-                            name = " ".join(parts[1:-1])
+                            time_str = parts[-1] # الساعة (04:40)
+                            name = " ".join(parts[1:-1]) # اسم الإذاعة
                             if name in STATIONS:
                                 h, m = time_str.split(":")
-                                scheduler.add_job(broadcast_task, "cron", hour=int(h), minute=int(m), args=[name, STATIONS[name]])
+                                scheduler.add_job(
+                                    broadcast_task, "cron", 
+                                    hour=int(h), minute=int(m), 
+                                    args=[name, STATIONS[name]],
+                                    id=f"job_{h}_{m}", replace_existing=True
+                                )
                                 send_msg(ADMIN_ID, f"✅ تم جدولة {name} الساعة {time_str}")
-        except: await asyncio.sleep(5)
+
+        except Exception as e:
+            print(f"Polling error: {e}")
+            await asyncio.sleep(5)
         await asyncio.sleep(1)
 
 async def main():
