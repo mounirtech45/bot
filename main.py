@@ -17,7 +17,7 @@ ALGERIA_TZ = pytz.timezone("Africa/Algiers")
 app = Client("stream_bot", bot_token=BOT_TOKEN, api_id=2040, api_hash="b18441a1ff765110c22fa0589762a6d7")
 scheduler = AsyncIOScheduler(timezone=ALGERIA_TZ)
 
-IMAGE_PATH = "image.jpg"
+IMAGE_PATH = "icons/image.jpg"
 
 # دالة تشغيل البث عبر FFmpeg
 def run_ffmpeg(source_url):
